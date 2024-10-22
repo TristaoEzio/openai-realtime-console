@@ -1,35 +1,19 @@
-/**
- * Running a local relay server will allow you to hide your API key
- * and run custom logic on the server
- *
- * Set the local relay server address to:
- * REACT_APP_LOCAL_RELAY_SERVER_URL=http://localhost:8081
- *
- * This will also require you to set OPENAI_API_KEY= in a `.env` file
- * You can run it with `npm run relay`, in parallel with `npm start`
- */
-const LOCAL_RELAY_SERVER_URL: string =
-  process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
-
+// Importações necessárias
 import { useEffect, useRef, useCallback, useState } from 'react';
-
+import * as xlsx from 'xlsx';
 import { RealtimeClient } from '@openai/realtime-api-beta';
 import { ItemType } from '@openai/realtime-api-beta/dist/lib/client.js';
 import { WavRecorder, WavStreamPlayer } from '../lib/wavtools/index.js';
-import { instructions } from '../utils/conversation_config.js';
 import { WavRenderer } from '../utils/wav_renderer';
-
 import { X, Edit, Zap, ArrowUp, ArrowDown } from 'react-feather';
 import { Button } from '../components/button/Button';
 import { Toggle } from '../components/toggle/Toggle';
 import { Map } from '../components/Map';
-
 import './ConsolePage.scss';
-import { isJsxOpeningLikeElement } from 'typescript';
 
-/**
- * Type for result from get_weather() function call
- */
+const LOCAL_RELAY_SERVER_URL: string =
+  process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
+
 interface Coordinates {
   lat: number;
   lng: number;
@@ -44,9 +28,6 @@ interface Coordinates {
   };
 }
 
-/**
- * Type for all event logs
- */
 interface RealtimeEvent {
   time: string;
   source: 'client' | 'server';
@@ -56,23 +37,70 @@ interface RealtimeEvent {
 
 export function ConsolePage() {
   /**
-   * Ask user for API Key
-   * If we're using the local relay server, we don't need this
+   * Estado e referências para a planilha
+   */
+  const [sheetData, setSheetData] = useState<any[]>([]);
+  const workbookRef = useRef<xlsx.WorkBook | null>(null);
+  const sheetRef = useRef<xlsx.WorkSheet | null>(null);
+
+  // Função para carregar a planilha
+  const loadWorkbook = async () => {
+    const response = await fetch('/dados_sinteticos.xlsx');
+    const arrayBuffer = await response.arrayBuffer();
+
+    const data = new Uint8Array(arrayBuffer);
+    const workbook = xlsx.read(data, { type: 'array' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    workbookRef.current = workbook;
+    sheetRef.current = sheet;
+
+    const jsonData = xlsx.utils.sheet_to_json(sheet);
+    setSheetData(jsonData);
+  };
+
+  // Função para atualizar a planilha
+  const updateSheetData = async (data: any[]) => {
+    if (!workbookRef.current) return;
+
+    const workbook = workbookRef.current;
+    const sheetName = workbook.SheetNames[0];
+    const newSheet = xlsx.utils.json_to_sheet(data);
+    workbook.Sheets[sheetName] = newSheet;
+
+    const wbout = xlsx.write(workbook, { bookType: 'xlsx', type: 'array' });
+
+    await fetch('/api/update-excel', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+      },
+      body: wbout,
+    });
+
+    await loadWorkbook();
+  };
+
+  // Carregar a planilha quando o componente montar
+  useEffect(() => {
+    loadWorkbook();
+  }, []);
+
+  /**
+   * Solicitar API Key se necessário
    */
   const apiKey = LOCAL_RELAY_SERVER_URL
     ? ''
     : localStorage.getItem('tmp::voice_api_key') ||
-      prompt('OpenAI API Key') ||
-      '';
+    prompt('OpenAI API Key') ||
+    '';
   if (apiKey !== '') {
     localStorage.setItem('tmp::voice_api_key', apiKey);
   }
 
   /**
-   * Instantiate:
-   * - WavRecorder (speech input)
-   * - WavStreamPlayer (speech output)
-   * - RealtimeClient (API client)
+   * Instanciar os objetos necessários
    */
   const wavRecorderRef = useRef<WavRecorder>(
     new WavRecorder({ sampleRate: 24000 })
@@ -85,17 +113,14 @@ export function ConsolePage() {
       LOCAL_RELAY_SERVER_URL
         ? { url: LOCAL_RELAY_SERVER_URL }
         : {
-            apiKey: apiKey,
-            dangerouslyAllowAPIKeyInBrowser: true,
-          }
+          apiKey: apiKey,
+          dangerouslyAllowAPIKeyInBrowser: true,
+        }
     )
   );
 
   /**
-   * References for
-   * - Rendering audio visualization (canvas)
-   * - Autoscrolling event logs
-   * - Timing delta for event log displays
+   * Referências adicionais
    */
   const clientCanvasRef = useRef<HTMLCanvasElement>(null);
   const serverCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -104,11 +129,7 @@ export function ConsolePage() {
   const startTimeRef = useRef<string>(new Date().toISOString());
 
   /**
-   * All of our variables for displaying application state
-   * - items are all conversation items (dialog)
-   * - realtimeEvents are event logs, which can be expanded
-   * - memoryKv is for set_memory() function
-   * - coords, marker are for get_weather() function
+   * Estados para o aplicativo
    */
   const [items, setItems] = useState<ItemType[]>([]);
   const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([]);
@@ -120,13 +141,13 @@ export function ConsolePage() {
   const [isRecording, setIsRecording] = useState(false);
   const [memoryKv, setMemoryKv] = useState<{ [key: string]: any }>({});
   const [coords, setCoords] = useState<Coordinates | null>({
-    lat: 37.775593,
-    lng: -122.418137,
+    lat: -23.564365127246454,
+    lng: -46.70064807831212,
   });
   const [marker, setMarker] = useState<Coordinates | null>(null);
 
   /**
-   * Utility for formatting the timing of logs
+   * Funções utilitárias
    */
   const formatTime = useCallback((timestamp: string) => {
     const startTime = startTimeRef.current;
@@ -146,9 +167,6 @@ export function ConsolePage() {
     return `${pad(m)}:${pad(s)}.${pad(hs)}`;
   }, []);
 
-  /**
-   * When you click the API key
-   */
   const resetAPIKey = useCallback(() => {
     const apiKey = prompt('OpenAI API Key');
     if (apiKey !== null) {
@@ -159,33 +177,31 @@ export function ConsolePage() {
   }, []);
 
   /**
-   * Connect to conversation:
-   * WavRecorder taks speech input, WavStreamPlayer output, client is API client
+   * Conectar à conversa
    */
   const connectConversation = useCallback(async () => {
     const client = clientRef.current;
     const wavRecorder = wavRecorderRef.current;
     const wavStreamPlayer = wavStreamPlayerRef.current;
 
-    // Set state variables
+    // Setar variáveis de estado
     startTimeRef.current = new Date().toISOString();
     setIsConnected(true);
     setRealtimeEvents([]);
     setItems(client.conversation.getItems());
 
-    // Connect to microphone
+    // Conectar ao microfone
     await wavRecorder.begin();
 
-    // Connect to audio output
+    // Conectar à saída de áudio
     await wavStreamPlayer.connect();
 
-    // Connect to realtime API
+    // Conectar ao API em tempo real
     await client.connect();
     client.sendUserMessageContent([
       {
         type: `input_text`,
         text: `Hello!`,
-        // text: `For testing purposes, I want you to list ten car brands. Number each item, e.g. "one (or whatever number you are one): the item name".`
       },
     ]);
 
@@ -195,7 +211,7 @@ export function ConsolePage() {
   }, []);
 
   /**
-   * Disconnect and reset conversation state
+   * Desconectar da conversa
    */
   const disconnectConversation = useCallback(async () => {
     setIsConnected(false);
@@ -224,8 +240,7 @@ export function ConsolePage() {
   }, []);
 
   /**
-   * In push-to-talk mode, start recording
-   * .appendInputAudio() for each sample
+   * Gravação push-to-talk
    */
   const startRecording = async () => {
     setIsRecording(true);
@@ -240,9 +255,6 @@ export function ConsolePage() {
     await wavRecorder.record((data) => client.appendInputAudio(data.mono));
   };
 
-  /**
-   * In push-to-talk mode, stop recording
-   */
   const stopRecording = async () => {
     setIsRecording(false);
     const client = clientRef.current;
@@ -252,7 +264,7 @@ export function ConsolePage() {
   };
 
   /**
-   * Switch between Manual <> VAD mode for communication
+   * Alterar o tipo de detecção de turno
    */
   const changeTurnEndType = async (value: string) => {
     const client = clientRef.current;
@@ -269,14 +281,29 @@ export function ConsolePage() {
     setCanPushToTalk(value === 'none');
   };
 
+  const updatedInstructions = `
+  Você é um assistente que ajuda o usuário a interagir com uma planilha de dados. Você pode usar as seguintes ferramentas:
+
+  1. **ler_planilha**: Lê os dados da planilha e retorna ao usuário.
+     - **Exemplo de uso**: Para mostrar os dados atuais da planilha.
+
+  2. **atualizar_planilha**: Atualiza um valor específico na planilha.
+     - **Parâmetros**:
+       - **linha** (número): O número da linha a ser atualizada.
+       - **coluna** (string): O nome da coluna a ser atualizada.
+       - **valor** (string): O novo valor para a célula.
+     - **Exemplo de uso**: Para alterar o valor de uma célula espec����fica.
+
+  Por favor, use essas ferramentas quando necessário para atender às solicitações do usuário.
+  `;
+
   /**
-   * Auto-scroll the event logs
+   * Auto-scroll dos logs de eventos
    */
   useEffect(() => {
     if (eventsScrollRef.current) {
       const eventsEl = eventsScrollRef.current;
       const scrollHeight = eventsEl.scrollHeight;
-      // Only scroll if height has just changed
       if (scrollHeight !== eventsScrollHeightRef.current) {
         eventsEl.scrollTop = scrollHeight;
         eventsScrollHeightRef.current = scrollHeight;
@@ -285,7 +312,7 @@ export function ConsolePage() {
   }, [realtimeEvents]);
 
   /**
-   * Auto-scroll the conversation logs
+   * Auto-scroll dos logs de conversa
    */
   useEffect(() => {
     const conversationEls = [].slice.call(
@@ -298,90 +325,72 @@ export function ConsolePage() {
   }, [items]);
 
   /**
-   * Set up render loops for the visualization canvas
+   * Configuração das ferramentas e eventos do cliente
    */
   useEffect(() => {
-    let isLoaded = true;
-
-    const wavRecorder = wavRecorderRef.current;
-    const clientCanvas = clientCanvasRef.current;
-    let clientCtx: CanvasRenderingContext2D | null = null;
-
-    const wavStreamPlayer = wavStreamPlayerRef.current;
-    const serverCanvas = serverCanvasRef.current;
-    let serverCtx: CanvasRenderingContext2D | null = null;
-
-    const render = () => {
-      if (isLoaded) {
-        if (clientCanvas) {
-          if (!clientCanvas.width || !clientCanvas.height) {
-            clientCanvas.width = clientCanvas.offsetWidth;
-            clientCanvas.height = clientCanvas.offsetHeight;
-          }
-          clientCtx = clientCtx || clientCanvas.getContext('2d');
-          if (clientCtx) {
-            clientCtx.clearRect(0, 0, clientCanvas.width, clientCanvas.height);
-            const result = wavRecorder.recording
-              ? wavRecorder.getFrequencies('voice')
-              : { values: new Float32Array([0]) };
-            WavRenderer.drawBars(
-              clientCanvas,
-              clientCtx,
-              result.values,
-              '#0099ff',
-              10,
-              0,
-              8
-            );
-          }
-        }
-        if (serverCanvas) {
-          if (!serverCanvas.width || !serverCanvas.height) {
-            serverCanvas.width = serverCanvas.offsetWidth;
-            serverCanvas.height = serverCanvas.offsetHeight;
-          }
-          serverCtx = serverCtx || serverCanvas.getContext('2d');
-          if (serverCtx) {
-            serverCtx.clearRect(0, 0, serverCanvas.width, serverCanvas.height);
-            const result = wavStreamPlayer.analyser
-              ? wavStreamPlayer.getFrequencies('voice')
-              : { values: new Float32Array([0]) };
-            WavRenderer.drawBars(
-              serverCanvas,
-              serverCtx,
-              result.values,
-              '#009900',
-              10,
-              0,
-              8
-            );
-          }
-        }
-        window.requestAnimationFrame(render);
-      }
-    };
-    render();
-
-    return () => {
-      isLoaded = false;
-    };
-  }, []);
-
-  /**
-   * Core RealtimeClient and audio capture setup
-   * Set all of our instructions, tools, events and more
-   */
-  useEffect(() => {
-    // Get refs
-    const wavStreamPlayer = wavStreamPlayerRef.current;
     const client = clientRef.current;
 
-    // Set instructions
-    client.updateSession({ instructions: instructions });
-    // Set transcription, otherwise we don't get user transcriptions back
+    // Atualizar instruções
+    client.updateSession({ instructions: updatedInstructions });
+
+    // Ativar transcrição de áudio
     client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
 
-    // Add tools
+    // Adicionar ferramentas
+    client.addTool(
+      {
+        name: 'ler_planilha',
+        description: 'Lê os dados da planilha e retorna ao usuário.',
+        parameters: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      async () => {
+        if (!sheetData.length) {
+          await loadWorkbook();
+        }
+        return sheetData;
+      }
+    );
+
+    client.addTool(
+      {
+        name: 'atualizar_planilha',
+        description: 'Atualiza um valor específico na planilha.',
+        parameters: {
+          type: 'object',
+          properties: {
+            linha: {
+              type: 'number',
+              description: 'O número da linha a ser atualizada.',
+            },
+            coluna: {
+              type: 'string',
+              description: 'O nome da coluna a ser atualizada.',
+            },
+            valor: {
+              type: 'string',
+              description: 'O novo valor para a célula.',
+            },
+          },
+          required: ['linha', 'coluna', 'valor'],
+        },
+      },
+      async ({ linha, coluna, valor }: { linha: number; coluna: string; valor: string }) => {
+        const data = [...sheetData];
+        const rowIndex = linha - 1;
+        if (data[rowIndex]) {
+          data[rowIndex][coluna] = valor;
+          await updateSheetData(data);
+          setSheetData(data);
+          return { success: true };
+        } else {
+          return { success: false, error: 'Linha não encontrada' };
+        }
+      }
+    );
+
     client.addTool(
       {
         name: 'set_memory',
@@ -411,6 +420,7 @@ export function ConsolePage() {
         return { ok: true };
       }
     );
+
     client.addTool(
       {
         name: 'get_weather',
@@ -455,12 +465,56 @@ export function ConsolePage() {
       }
     );
 
-    // handle realtime events from client + server for event logging
+    // Eventos de atualização de conversa
+    // Eventos de atualização de conversa
+    client.on(
+      'conversation.updated',
+      async ({ item, delta }: { item: ItemType; delta: any }) => {
+        const items = client.conversation.getItems();
+
+        // Verificar se o item é uma resposta do assistente contendo os dados da planilha
+        if (item.role === 'assistant' && item.formatted.text) {
+          try {
+            const data = JSON.parse(item.formatted.text);
+            if (Array.isArray(data)) {
+              setSheetData(data);
+            }
+          } catch (e) {
+            // Não é JSON, então ignoramos
+          }
+        }
+        if (delta?.audio) {
+          wavStreamPlayerRef.current.add16BitPCM(delta.audio, item.id);
+        }
+        if ((item as any).status === 'completed' && item.formatted.audio?.length) {
+          const wavFile = await WavRecorder.decode(
+            item.formatted.audio,
+            24000,
+            24000
+          );
+          item.formatted.file = wavFile;
+        }
+        setItems(items);
+      }
+    );
+
+    // Eventos de erro
+    client.on('error', (event: any) => console.error(event));
+
+    // Eventos de interrupção
+    client.on('conversation.interrupted', async () => {
+      const trackSampleOffset = await wavStreamPlayerRef.current.interrupt();
+      if (trackSampleOffset?.trackId) {
+        const { trackId, offset } = trackSampleOffset;
+        await client.cancelResponse(trackId, offset);
+      }
+    });
+
+    // Eventos em tempo real
     client.on('realtime.event', (realtimeEvent: RealtimeEvent) => {
       setRealtimeEvents((realtimeEvents) => {
         const lastEvent = realtimeEvents[realtimeEvents.length - 1];
         if (lastEvent?.event.type === realtimeEvent.event.type) {
-          // if we receive multiple events in a row, aggregate them for display purposes
           lastEvent.count = (lastEvent.count || 0) + 1;
           return realtimeEvents.slice(0, -1).concat(lastEvent);
         } else {
@@ -468,47 +522,23 @@ export function ConsolePage() {
         }
       });
     });
-    client.on('error', (event: any) => console.error(event));
-    client.on('conversation.interrupted', async () => {
-      const trackSampleOffset = await wavStreamPlayer.interrupt();
-      if (trackSampleOffset?.trackId) {
-        const { trackId, offset } = trackSampleOffset;
-        await client.cancelResponse(trackId, offset);
-      }
-    });
-    client.on('conversation.updated', async ({ item, delta }: any) => {
-      const items = client.conversation.getItems();
-      if (delta?.audio) {
-        wavStreamPlayer.add16BitPCM(delta.audio, item.id);
-      }
-      if (item.status === 'completed' && item.formatted.audio?.length) {
-        const wavFile = await WavRecorder.decode(
-          item.formatted.audio,
-          24000,
-          24000
-        );
-        item.formatted.file = wavFile;
-      }
-      setItems(items);
-    });
 
     setItems(client.conversation.getItems());
 
     return () => {
-      // cleanup; resets to defaults
       client.reset();
     };
-  }, []);
+  }, [sheetData]);
 
   /**
-   * Render the application
+   * Renderização do aplicativo
    */
   return (
     <div data-component="ConsolePage">
       <div className="content-top">
         <div className="content-title">
           <img src="/openai-logomark.svg" />
-          <span>realtime console</span>
+          <span>Sem Parar Empresas | Artificial intelligence (AI)</span>
         </div>
         <div className="content-api-key">
           {!LOCAL_RELAY_SERVER_URL && (
@@ -553,7 +583,6 @@ export function ConsolePage() {
                       <div
                         className="event-summary"
                         onClick={() => {
-                          // toggle event details
                           const id = event.event_id;
                           const expanded = { ...expandedEvents };
                           if (expanded[id]) {
@@ -565,11 +594,10 @@ export function ConsolePage() {
                         }}
                       >
                         <div
-                          className={`event-source ${
-                            event.type === 'error'
-                              ? 'error'
-                              : realtimeEvent.source
-                          }`}
+                          className={`event-source ${event.type === 'error'
+                            ? 'error'
+                            : realtimeEvent.source
+                            }`}
                         >
                           {realtimeEvent.source === 'client' ? (
                             <ArrowUp />
@@ -596,6 +624,33 @@ export function ConsolePage() {
                   </div>
                 );
               })}
+            </div>
+          </div>
+          <div className="content-block sheet-data">
+            <div className="content-block-title">Dados da Planilha</div>
+            <div className="content-block-body">
+              {sheetData.length > 0 ? (
+                <table>
+                  <thead>
+                    <tr>
+                      {Object.keys(sheetData[0]).map((key) => (
+                        <th key={key}>{key}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sheetData.slice(0, 3).map((row, index) => (
+                      <tr key={index}>
+                        {Object.values(row).map((value, idx) => (
+                          <td key={idx}>{String(value)}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p>Nenhum dado disponível.</p>
+              )}
             </div>
           </div>
           <div className="content-block conversation">
@@ -639,7 +694,7 @@ export function ConsolePage() {
                               (conversationItem.formatted.audio?.length
                                 ? '(awaiting transcript)'
                                 : conversationItem.formatted.text ||
-                                  '(item sent)')}
+                                '(item sent)')}
                           </div>
                         )}
                       {!conversationItem.formatted.tool &&
